@@ -1,3 +1,5 @@
+notebooks/text_models/solutions/imdb_bert/*/variables/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
