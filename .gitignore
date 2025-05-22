@@ -1,4 +1,6 @@
-notebooks/text_models/solutions/imdb_bert/*/variables/
+notebooks/text_models/solutions/imdb_bert/*
+notebooks/responsible_ai/explainable_ai/solutions/model/*
+notebooks/responsible_ai/explainable_ai/solutions/model/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
