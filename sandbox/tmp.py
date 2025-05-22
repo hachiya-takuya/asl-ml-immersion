@@ -1,7 +1,8 @@
 """here it is"""
-import numpy as np
 
 import os
+import datetime
+
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras.layers import (
@@ -15,6 +16,24 @@ from tensorflow.keras.layers import (
 )
 
 import keras_nlp
+
+
+class TimestampedModelCheckpoint(tf.keras.callbacks.Callback):
+    """timestamp check point call back"""
+    def __init__(self, save_dir):
+        super().__init__()
+        self.save_dir = save_dir
+        os.makedirs(save_dir, exist_ok=True)
+
+    def on_epoch_end(self, epoch, logs=None):
+        """on epoch end"""
+        _ = logs
+        timestamp = datetime.datetime.now().isoformat(timespec='seconds')
+        safe_timestamp = timestamp.replace(":", "_")
+        filename = f"model_{safe_timestamp}_epoch{epoch}"
+        filepath = os.path.join(self.save_dir, filename)
+        self.model.save(filepath)
+        print(f">>> Saved model to {filepath}")
 
 
 class TransformerBlock(Layer):
@@ -132,6 +151,7 @@ class Transformer:
             steps_per_epoch=steps_per_epoch,
             validation_data=validation_data,
             epochs=epochs,
+            callbacks=[TimestampedModelCheckpoint(save_dir="./variables")]
         )
 
     def generate(self, text: str, p: float = 0.2):
@@ -143,23 +163,26 @@ class Transformer:
         gen_ittr = self._generate_step(
             tokens=packed_tokens,
             p=p,
-            start_index=initial_sequence_length  # 次に予測する位置
+            start_index=int(initial_sequence_length.numpy())
         )
-        generated_text_parts = []
+        generated_text_parts = [text]
         for word in gen_ittr:
             generated_text_parts.append(word)
             print(word, end=" ")
 
-        return "".join(generated_text_parts)  # より自然な表示のため
+        return " ".join(generated_text_parts)
 
     def _generate_step(self, tokens, p=0.2, start_index=1):
         tokens = tokens.numpy()
         for i in range(start_index, self.maxlen):
-            logits = self.model.predict([tokens], verbose=0)[:, i - 1, :]
-            logits = tf.constant(logits)
-            sampled_token = top_p_sample(logits[0], p).numpy()
+            sampled_token = len(self.tokenizer.vocabulary)
+            while sampled_token > len(self.tokenizer.vocabulary) - 1:
+                logits = self.model.predict([tokens], verbose=0)[:, i - 1, :]
+                logits = tf.constant(logits)
+                sampled_token = top_p_sample(logits[0], p)
+
             tokens[0][i] = sampled_token
-            next_word = self.tokenizer.detokenize([sampled_token]).numpy().decode("utf-8")
+            next_word = self.tokenizer.detokenize([sampled_token]).numpy().decode()
             print(next_word)
             yield next_word
             if sampled_token == 2:  # EOS token
