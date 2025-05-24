@@ -24,23 +24,31 @@ class TimestampedModelCheckpoint(tf.keras.callbacks.Callback):
         super().__init__()
         self.save_dir = save_dir
         os.makedirs(save_dir, exist_ok=True)
+        self.saved_models = []
 
     def on_epoch_end(self, epoch, logs=None):
         """on epoch end"""
-        _ = logs
-        timestamp = datetime.datetime.now().isoformat(timespec='seconds')
-        safe_timestamp = timestamp.replace(":", "_")
-        filename = f"model_{safe_timestamp}_epoch{epoch}"
-        filepath = os.path.join(self.save_dir, filename)
-        self.model.save(filepath)
-        print(f">>> Saved model to {filepath}")
+        if epoch % 12 == 0:
+            _ = logs
+            timestamp = datetime.datetime.now().isoformat(timespec='seconds')
+            safe_timestamp = timestamp.replace(":", "_")
+            filename = f"model_{safe_timestamp}_epoch{epoch}"
+            filepath = os.path.join(self.save_dir, filename)
+            self.model.save(filepath)
+            print(f">>> Saved model to {filepath}")
+            self.saved_models.append(filepath)
+
+            while len(self.saved_models) > 2:
+                to_delete = self.saved_models.pop(0)
+                print(f">>> Deleting old model: {to_delete}")
+                tf.io.gfile.rmtree(to_delete)
 
 
 class TransformerBlock(Layer):
     """transformer block"""
     def __init__(self, embed_dim, num_heads, ff_dim, rate=0.1):
         super().__init__()
-        self.att = MultiHeadAttention(num_heads=num_heads, key_dim=embed_dim)
+        self.att = MultiHeadAttention(num_heads=num_heads, key_dim=embed_dim, use_causal_mask=True)
         self.ffn = keras.Sequential(
             [Dense(ff_dim, activation="relu"), Dense(embed_dim), ]
         )
@@ -90,7 +98,7 @@ class Transformer:
             embed_dim: int = 32,  # Embedding size for each token
             num_heads: int = 2,  # Number of attention heads
             ff_dim: int = 32,  # Hidden layer size in feed forward network inside transformer
-            maxlen: int = 2048,
+            maxlen: int = 128,
             loop_n: int = 12,
             vocab_size: int = 32000,
             tokenizer=None,
@@ -116,6 +124,8 @@ class Transformer:
             self.start_packer = keras_nlp.layers.StartEndPacker(
                 sequence_length=self.maxlen,
                 start_value=tokenizer.token_to_id("[BOS]"),
+                end_value=tokenizer.token_to_id("[PAD]"),
+                pad_value=tokenizer.token_to_id("[PAD]"),
             )
 
     def train_tokenizer(self, data, vocab_size=4096):
@@ -135,6 +145,8 @@ class Transformer:
         self.start_packer = keras_nlp.layers.StartEndPacker(
             sequence_length=self.maxlen,
             start_value=tokenizer.token_to_id("[BOS]"),
+            end_value=tokenizer.token_to_id("[PAD]"),
+            pad_value=tokenizer.token_to_id("[PAD]"),
         )
 
     def train(
@@ -183,7 +195,6 @@ class Transformer:
 
             tokens[0][i] = sampled_token
             next_word = self.tokenizer.detokenize([sampled_token]).numpy().decode()
-            print(next_word)
             yield next_word
             if sampled_token == 2:  # EOS token
                 raise StopIteration
