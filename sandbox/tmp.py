@@ -1,25 +1,25 @@
 """here it is"""
 
-import os
 import datetime
+import os
 
+import keras_nlp
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras.layers import (
-    Layer,
-    Input,
-    MultiHeadAttention,
     Dense,
-    LayerNormalization,
     Dropout,
     Embedding,
+    Input,
+    Layer,
+    LayerNormalization,
+    MultiHeadAttention,
 )
-
-import keras_nlp
 
 
 class TimestampedModelCheckpoint(tf.keras.callbacks.Callback):
     """timestamp check point call back"""
+
     def __init__(self, save_dir):
         super().__init__()
         self.save_dir = save_dir
@@ -30,7 +30,7 @@ class TimestampedModelCheckpoint(tf.keras.callbacks.Callback):
         """on epoch end"""
         if epoch % 12 == 0:
             _ = logs
-            timestamp = datetime.datetime.now().isoformat(timespec='seconds')
+            timestamp = datetime.datetime.now().isoformat(timespec="seconds")
             safe_timestamp = timestamp.replace(":", "_")
             filename = f"model_{safe_timestamp}_epoch{epoch}"
             filepath = os.path.join(self.save_dir, filename)
@@ -46,11 +46,15 @@ class TimestampedModelCheckpoint(tf.keras.callbacks.Callback):
 
 class TransformerBlock(Layer):
     """transformer block"""
+
     def __init__(self, embed_dim, num_heads, ff_dim, rate=0.1):
         super().__init__()
-        self.att = MultiHeadAttention(num_heads=num_heads, key_dim=embed_dim, use_causal_mask=True)
+        self.att = MultiHeadAttention(num_heads=num_heads, key_dim=embed_dim)
         self.ffn = keras.Sequential(
-            [Dense(ff_dim, activation="relu"), Dense(embed_dim), ]
+            [
+                Dense(ff_dim, activation="relu"),
+                Dense(embed_dim),
+            ]
         )
         self.layernorm1 = LayerNormalization(epsilon=1e-6)
         self.layernorm2 = LayerNormalization(epsilon=1e-6)
@@ -69,6 +73,7 @@ class TransformerBlock(Layer):
 
 class TokenAndPositionEmbedding(Layer):
     """class"""
+
     def __init__(self, maxlen, vocab_size, embed_dim):
         super().__init__()
         self.maxlen = maxlen
@@ -76,7 +81,7 @@ class TokenAndPositionEmbedding(Layer):
         self.pos_emb = Embedding(input_dim=maxlen, output_dim=embed_dim)
 
     def call(self, x):
-        """call """
+        """call"""
         seq_len = tf.shape(x)[-1]
         pad_len = self.maxlen - seq_len
 
@@ -93,15 +98,16 @@ class TokenAndPositionEmbedding(Layer):
 
 class Transformer:
     """transformer"""
+
     def __init__(
-            self,
-            embed_dim: int = 32,  # Embedding size for each token
-            num_heads: int = 2,  # Number of attention heads
-            ff_dim: int = 32,  # Hidden layer size in feed forward network inside transformer
-            maxlen: int = 128,
-            loop_n: int = 12,
-            vocab_size: int = 32000,
-            tokenizer=None,
+        self,
+        embed_dim: int = 32,  # Embedding size for each token
+        num_heads: int = 2,  # Number of attention heads
+        ff_dim: int = 32,  # Hidden layer size in feed forward network inside transformer
+        maxlen: int = 2048,
+        loop_n: int = 12,
+        vocab_size: int = 32000,
+        tokenizer=None,
     ):
         self.history = None
         self.maxlen = maxlen
@@ -118,7 +124,11 @@ class Transformer:
         outputs = Dense(vocab_size, activation="softmax")(x)
 
         self.model = keras.Model(inputs=inputs, outputs=outputs)
-        self.model.compile(optimizer="adam", loss="sparse_categorical_crossentropy", metrics=["accuracy"])
+        self.model.compile(
+            optimizer="adam",
+            loss="sparse_categorical_crossentropy",
+            metrics=["accuracy"],
+        )
         self.tokenizer = tokenizer
         if self.tokenizer:
             self.start_packer = keras_nlp.layers.StartEndPacker(
@@ -145,8 +155,6 @@ class Transformer:
         self.start_packer = keras_nlp.layers.StartEndPacker(
             sequence_length=self.maxlen,
             start_value=tokenizer.token_to_id("[BOS]"),
-            end_value=tokenizer.token_to_id("[PAD]"),
-            pad_value=tokenizer.token_to_id("[PAD]"),
         )
 
     def train(
@@ -163,7 +171,7 @@ class Transformer:
             steps_per_epoch=steps_per_epoch,
             validation_data=validation_data,
             epochs=epochs,
-            callbacks=[TimestampedModelCheckpoint(save_dir="./variables")]
+            callbacks=[TimestampedModelCheckpoint(save_dir="./variables")],
         )
 
     def generate(self, text: str, p: float = 0.2):
@@ -175,7 +183,7 @@ class Transformer:
         gen_ittr = self._generate_step(
             tokens=packed_tokens,
             p=p,
-            start_index=int(initial_sequence_length.numpy())
+            start_index=int(initial_sequence_length.numpy()),
         )
         generated_text_parts = [text]
         for word in gen_ittr:
