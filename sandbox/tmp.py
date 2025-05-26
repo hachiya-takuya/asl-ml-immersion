@@ -127,7 +127,7 @@ class Transformer:
         self.model.compile(
             optimizer="adam",
             loss="sparse_categorical_crossentropy",
-            metrics=["accuracy"],
+            metrics=[keras_nlp.metrics.Perplexity(from_logits=True, mask_token_id=0)],
         )
         self.tokenizer = tokenizer
         if self.tokenizer:
@@ -137,6 +137,7 @@ class Transformer:
                 end_value=tokenizer.token_to_id("[PAD]"),
                 pad_value=tokenizer.token_to_id("[PAD]"),
             )
+            self.pad_token_id = self.tokenizer.token_to_id("[PAD]")
 
     def train_tokenizer(self, data, vocab_size=4096):
         """train_tokenizer"""
@@ -156,6 +157,7 @@ class Transformer:
             sequence_length=self.maxlen,
             start_value=tokenizer.token_to_id("[BOS]"),
         )
+        self.pad_token_id = self.tokenizer.token_to_id("[PAD]")
 
     def train(
             self,
@@ -174,7 +176,7 @@ class Transformer:
             callbacks=[TimestampedModelCheckpoint(save_dir="./variables")],
         )
 
-    def generate(self, text: str, p: float = 0.2):
+    def generate(self, text: str, p: float = None):
         """generate"""
         input_tokens = self.tokenizer([text])
         packed_tokens = self.start_packer(input_tokens)
@@ -192,7 +194,7 @@ class Transformer:
 
         return " ".join(generated_text_parts)
 
-    def _generate_step(self, tokens, p=0.2, start_index=1):
+    def _generate_step(self, tokens, p=None, start_index=1):
         tokens = tokens.numpy()
         for i in range(start_index, self.maxlen):
             sampled_token = len(self.tokenizer.vocabulary)
@@ -204,11 +206,14 @@ class Transformer:
             tokens[0][i] = sampled_token
             next_word = self.tokenizer.detokenize([sampled_token]).numpy().decode()
             yield next_word
-            if sampled_token == 2:  # EOS token
+            if sampled_token == self.tokenizer.token_to_id("[PAD]"):
                 raise StopIteration
 
 
-def _build_token_dataset():
+def _build_token_dataset(
+    BATCH_SIZE=64,
+    MIN_TRAINING_SEQ_LEN=512
+):
     """
     for create dataset to train tokenizer
     if you want to train tokenizer local,
@@ -217,8 +222,6 @@ def _build_token_dataset():
     Run Transformer.train_tokenizer(ds)
     """
     # Data
-    BATCH_SIZE = 64
-    MIN_TRAINING_SEQ_LEN = 512
 
     keras.utils.get_file(
         origin="https://storage.googleapis.com/asl-public/text/data/simplebooks.zip",
@@ -243,8 +246,10 @@ def _build_token_dataset():
     return raw_train_ds, raw_val_ds
 
 
-def top_p_sample(logits, p=0.2):
+def top_p_sample(logits, p=None):
     """top sample"""
+    if p is None:
+        p = 0.02
     probs = tf.nn.softmax(logits)
     sorted_probs, sorted_indices = tf.sort(probs, direction="DESCENDING"), tf.argsort(probs, direction="DESCENDING")
     cumulative_probs = tf.cumsum(sorted_probs)
