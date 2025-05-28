@@ -28,7 +28,7 @@ class TimestampedModelCheckpoint(tf.keras.callbacks.Callback):
 
     def on_epoch_end(self, epoch, logs=None):
         """on epoch end"""
-        if epoch % 12 == 0:
+        if (epoch + 1) % 8 == 0:
             _ = logs
             timestamp = datetime.datetime.now().isoformat(timespec="seconds")
             safe_timestamp = timestamp.replace(":", "_")
@@ -38,7 +38,7 @@ class TimestampedModelCheckpoint(tf.keras.callbacks.Callback):
             print(f">>> Saved model to {filepath}")
             self.saved_models.append(filepath)
 
-            while len(self.saved_models) > 2:
+            while len(self.saved_models) > 16:
                 to_delete = self.saved_models.pop(0)
                 print(f">>> Deleting old model: {to_delete}")
                 tf.io.gfile.rmtree(to_delete)
@@ -53,7 +53,7 @@ class TransformerBlock(Layer):
         self.ffn = keras.Sequential(
             [
                 Dense(ff_dim, activation="relu"),
-                Dense(embed_dim),
+                Dense(embed_dim, activation="relu"),
             ]
         )
         self.layernorm1 = LayerNormalization(epsilon=1e-6)
@@ -96,8 +96,49 @@ class TokenAndPositionEmbedding(Layer):
         return x + positions
 
 
+def masked_sparse_categorical_crossentropy(pad_token_id):
+    """masked sparse categorical crossentropy"""
+    def _loss(y_true, y_pred):
+        mask = tf.cast(tf.not_equal(y_true, pad_token_id), tf.float32)
+        loss_ = tf.keras.losses.sparse_categorical_crossentropy(y_true, y_pred, from_logits=False)
+        loss_ = loss_ * mask
+        _loss.__name__ = "masked_sparse_categorical_crossentropy"
+        return tf.reduce_sum(loss_) / tf.reduce_sum(mask)
+    return _loss
+
+
 class Transformer:
     """transformer"""
+
+    @classmethod
+    def load_model(
+        cls,
+        model_path,
+        tokenizer,
+        maxlen=128,
+        vocab_size=4096
+    ):
+        """
+        保存されたモデルから復元する。
+        - model_path: 保存先のパス
+        - tokenizer: 既存のtokenizerインスタンス
+        - その他: モデル構成と一致させる必要あり
+        """
+        pad_token_id = tokenizer.token_to_id("[PAD]")
+        custom_objects = {
+            'masked_sparse_categorical_crossentropy': masked_sparse_categorical_crossentropy(pad_token_id),
+            'TokenAndPositionEmbedding': TokenAndPositionEmbedding,
+            'TransformerBlock': TransformerBlock,
+        }
+        model = keras.models.load_model(model_path, custom_objects=custom_objects)
+
+        instance = cls(
+            maxlen=maxlen,
+            vocab_size=vocab_size,
+            tokenizer=tokenizer,
+        )
+        instance.model = model
+        return instance
 
     def __init__(
         self,
@@ -111,6 +152,7 @@ class Transformer:
     ):
         self.history = None
         self.maxlen = maxlen
+        self.pad_token_id = 0  # default
         inputs = Input(shape=(maxlen,))
         self.embedding_layer = TokenAndPositionEmbedding(maxlen, vocab_size, embed_dim)
         x = self.embedding_layer(inputs)
@@ -125,16 +167,17 @@ class Transformer:
 
         self.model = keras.Model(inputs=inputs, outputs=outputs)
         self.model.compile(
-            optimizer="adam",
-            loss="sparse_categorical_crossentropy",
-            metrics=[keras_nlp.metrics.Perplexity(from_logits=True, mask_token_id=0)],
+            optimizer=keras.optimizers.AdamW(learning_rate=1e-4),
+            loss=masked_sparse_categorical_crossentropy(pad_token_id=self.pad_token_id),
+            metrics=[keras_nlp.metrics.Perplexity(from_logits=False, mask_token_id=0)],
+            # metrics=["accuracy"],
         )
         self.tokenizer = tokenizer
         if self.tokenizer:
             self.start_packer = keras_nlp.layers.StartEndPacker(
                 sequence_length=self.maxlen,
                 start_value=tokenizer.token_to_id("[BOS]"),
-                end_value=tokenizer.token_to_id("[PAD]"),
+                end_value=tokenizer.token_to_id("[EOS]"),
                 pad_value=tokenizer.token_to_id("[PAD]"),
             )
             self.pad_token_id = self.tokenizer.token_to_id("[PAD]")
@@ -145,7 +188,7 @@ class Transformer:
             data,
             vocabulary_size=vocab_size,
             lowercase=True,
-            reserved_tokens=["[PAD]", "[UNK]", "[BOS]"],
+            reserved_tokens=["[PAD]", "[BOS]", "[EOS]", "[UNK]"]
         )
         tokenizer = keras_nlp.tokenizers.WordPieceTokenizer(
             vocabulary=vocab,
@@ -156,6 +199,8 @@ class Transformer:
         self.start_packer = keras_nlp.layers.StartEndPacker(
             sequence_length=self.maxlen,
             start_value=tokenizer.token_to_id("[BOS]"),
+            end_value=tokenizer.token_to_id("[EOS]"),
+            pad_value=tokenizer.token_to_id("[PAD]"),
         )
         self.pad_token_id = self.tokenizer.token_to_id("[PAD]")
 
@@ -165,9 +210,12 @@ class Transformer:
             train_dataset,
             validation_data,
             steps_per_epoch,
-            epochs
+            epochs,
+            lr: float = None
     ):
         """ train """
+        if lr is not None:
+            keras.backend.set_value(self.model.optimizer.learning_rate, lr)
         self.history = self.model.fit(
             train_dataset,
             steps_per_epoch=steps_per_epoch,
@@ -201,18 +249,36 @@ class Transformer:
             while sampled_token > len(self.tokenizer.vocabulary) - 1:
                 logits = self.model.predict([tokens], verbose=0)[:, i - 1, :]
                 logits = tf.constant(logits)
-                sampled_token = top_p_sample(logits[0], p)
+                sampled_token = self.top_p_sample(logits[0], p)
 
             tokens[0][i] = sampled_token
             next_word = self.tokenizer.detokenize([sampled_token]).numpy().decode()
             yield next_word
-            if sampled_token == self.tokenizer.token_to_id("[PAD]"):
-                raise StopIteration
+            if sampled_token == self.tokenizer.token_to_id("[EOS]"):
+                return
+
+    @staticmethod
+    def top_p_sample(logits, p=None):
+        """top sample"""
+        if p is None:
+            p = 0.02
+        probs = tf.nn.softmax(logits)
+        sorted_probs, sorted_indices = tf.sort(probs, direction="DESCENDING"), tf.argsort(probs, direction="DESCENDING")
+        cumulative_probs = tf.cumsum(sorted_probs)
+
+        cutoff_index = tf.reduce_min(tf.where(cumulative_probs > p))
+        cutoff_index = tf.maximum(cutoff_index, 1)
+        top_p_indices = sorted_indices[:cutoff_index]
+        top_p_logits = tf.gather(logits, top_p_indices)
+        sampled_relative = tf.random.categorical([top_p_logits], num_samples=1)[0, 0]
+        sampled_token = top_p_indices[sampled_relative]
+
+        return sampled_token
 
 
 def _build_token_dataset(
     BATCH_SIZE=64,
-    MIN_TRAINING_SEQ_LEN=512
+    MIN_TRAINING_SEQ_LEN=92
 ):
     """
     for create dataset to train tokenizer
@@ -245,20 +311,3 @@ def _build_token_dataset(
     )
     return raw_train_ds, raw_val_ds
 
-
-def top_p_sample(logits, p=None):
-    """top sample"""
-    if p is None:
-        p = 0.02
-    probs = tf.nn.softmax(logits)
-    sorted_probs, sorted_indices = tf.sort(probs, direction="DESCENDING"), tf.argsort(probs, direction="DESCENDING")
-    cumulative_probs = tf.cumsum(sorted_probs)
-
-    cutoff_index = tf.reduce_min(tf.where(cumulative_probs > p))
-    cutoff_index = tf.maximum(cutoff_index, 1)
-    top_p_indices = sorted_indices[:cutoff_index]
-    top_p_logits = tf.gather(logits, top_p_indices)
-    sampled_relative = tf.random.categorical([top_p_logits], num_samples=1)[0, 0]
-    sampled_token = top_p_indices[sampled_relative]
-
-    return sampled_token
